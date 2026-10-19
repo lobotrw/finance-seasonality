@@ -27,7 +27,7 @@ st.sidebar.header("Seasonality")
 ticker = st.sidebar.selectbox(
     'Ticker:', ('^GSPC', 'ETH-USD', 'BTC-USD', "^IXIC"))
 
-max_value = 2035
+max_value = datetime.date.today().year
 year = st.slider("Start Year", min_value=1960, max_value=max_value, value=2000, step=1)
 
 
@@ -38,10 +38,16 @@ year = st.slider("Start Year", min_value=1960, max_value=max_value, value=2000, 
 # Define a function to download data
 @st.cache_data
 def download_data(ticker, start_date, end_date):
-    data = yf.download(ticker, start=start_date, end=end_date)
+    # auto_adjust=False keeps the "Adj Close" column; multi_level_index=False keeps flat columns (yfinance >= 0.2.48)
+    data = yf.download(ticker, start=start_date, end=end_date, auto_adjust=False,
+                       multi_level_index=False, progress=False)
     return data
 
-data = download_data(ticker, datetime.date(year, 1, 1), datetime.date(max_value, 1, 1))
+data = download_data(ticker, datetime.date(year, 1, 1), datetime.date.today() + datetime.timedelta(days=1))
+
+if data.empty or len(data) < 2:
+    st.warning(f"No price data for {ticker} from {year}. Pick an earlier start year.")
+    st.stop()
 
 # Set the app title and sidebar description
 if ticker == "^GSPC":
@@ -57,7 +63,7 @@ if ticker == "^IXIC":
 log_returns = data["Adj Close"].pct_change()
 
 # Resample to monthly frequency and calculate monthly returns
-monthly_returns = log_returns.resample('M').apply(lambda x: (1 + x).prod() - 1)
+monthly_returns = log_returns.resample('ME').apply(lambda x: (1 + x).prod() - 1)
 
 # Drop the NaN value at the beginning (since there's no previous month)
 monthly_returns = monthly_returns.dropna()
@@ -109,6 +115,8 @@ monthly_percentage_changes = monthly_returns_df.groupby('Month')['Monthly_Return
 
 # Pivot the DataFrame to create a heatmap
 heatmap_data = monthly_returns_df.pivot_table(index='Year', columns='Month', values='Monthly_Return')
+heatmap_data = heatmap_data.reindex(columns=range(1, 13))   # always 12 columns, even for a partial first year
+monthly_percentage_changes = monthly_percentage_changes.reindex(range(1, 13))
 
 
 
@@ -176,9 +184,9 @@ percentage_changes_fig.add_annotation(
                                         )
 
 # Streamlit integration
-st.plotly_chart(ret, use_container_width=True)
-st.plotly_chart(heatmap_fig, use_container_width=True)
-st.plotly_chart(percentage_changes_fig, use_container_width=False)
+st.plotly_chart(ret, width='stretch')
+st.plotly_chart(heatmap_fig, width='stretch')
+st.plotly_chart(percentage_changes_fig, width='content')
 
 st.write(
     "About\n",
