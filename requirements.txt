@@ -1,11 +1,5 @@
 yfinance>=0.2.54
 pandas
+numpy
 streamlit
 plotly
-monthly_returns_heatmap
-numpy
-Matplotlib
-Seaborn
-Pillow
-
-streamlit-analytics

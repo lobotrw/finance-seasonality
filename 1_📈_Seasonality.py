@@ -6,6 +6,8 @@ import plotly.express as px
 import numpy as np
 import datetime
 
+import seasonality
+
 
 #-------------------------------------------------------------------------------------------------------
 # Page Configurations
@@ -43,7 +45,8 @@ def download_data(ticker, start_date, end_date):
                        multi_level_index=False, progress=False)
     return data
 
-data = download_data(ticker, datetime.date(year, 1, 1), datetime.date.today() + datetime.timedelta(days=1))
+# Start ~2 weeks early so the selected first January has a prior month-end close (it is dropped otherwise).
+data = download_data(ticker, datetime.date(year, 1, 1) - datetime.timedelta(days=14), datetime.date.today() + datetime.timedelta(days=1))
 
 if data.empty or len(data) < 2:
     st.warning(f"No price data for {ticker} from {year}. Pick an earlier start year.")
@@ -57,139 +60,67 @@ if ticker == "^IXIC":
 
 
 #-------------------------------------------------------------------------------------------------------
-# RETURNS
+# RETURNS (complete months only; see seasonality.py)
 #-------------------------------------------------------------------------------------------------------
 
-log_returns = data["Adj Close"].pct_change()
+prices = data["Adj Close"]
+first_date = prices.dropna().index[0].date()
+if first_date > datetime.date(year, 1, 1):
+    st.info(f"{ticker} data starts on {first_date:%Y-%m-%d}, later than the selected start year {year}.")
 
-# Resample to monthly frequency and calculate monthly returns
-monthly_returns = log_returns.resample('ME').apply(lambda x: (1 + x).prod() - 1)
-
-# Drop the NaN value at the beginning (since there's no previous month)
-monthly_returns = monthly_returns.dropna()
-
-y=(1 + log_returns).cumprod()
-
+monthly_returns = seasonality.monthly_returns(prices)
+if monthly_returns.empty:
+    st.warning("Not enough data for one complete month. Pick an earlier start year.")
+    st.stop()
+growth = seasonality.growth_of_one(prices[prices.index >= pd.Timestamp(year, 1, 1)])
+heatmap_data = seasonality.heatmap_table(monthly_returns)
+stats = seasonality.month_stats(monthly_returns)
+st.caption(f"Complete months only: {monthly_returns.index[0]:%b %Y} – {monthly_returns.index[-1]:%b %Y} "
+           f"({len(monthly_returns)} months). The current, unfinished month and a partial first month are excluded.")
 
 #-------------------------------------------------------------------------------------------------------
-# VISUALIZATION OF DATA
-#-------------------------------------------------------------------------------------------------------
-
-#-------------------------------------------------------------------------------------------------------
-# CUMULATIVE RETURNS CHART
+# GROWTH OF $1 CHART
 ret = go.Figure()
-
-# Create and style traces for cumulative returns
-ret.add_trace(go.Scatter(
-                        x       = data.index, 
-                        y       = y,
-                        mode    = 'lines',
-                        name    = 'Cumulative Returns',
-                        line    = dict(color='gray', width=2)
-                        )
-              )
-
-# Highlight the selected with a light gray background
-ret.add_trace(go.Scatter(x          = data.index, 
-                        y           = y,
-                        mode        = 'lines',
-                        fill        = 'tozeroy',
-                        fillcolor   = 'rgba(220, 220, 220, 0.5)',
-                        line        = dict(color='rgba(255, 255, 255, 0)')
-                        )
-                )
-
-ret.update_layout(title=ticker + " Cumulative Returns Chart")
+ret.add_trace(go.Scatter(x=growth.index, y=growth, mode='lines', name='Growth of $1',
+                         line=dict(color='gray', width=2), fill='tozeroy',
+                         fillcolor='rgba(220, 220, 220, 0.5)'))
+ret.update_layout(title=f"{ticker} growth of $1 (adjusted close)", yaxis_title="Growth of $1")
 
 #-------------------------------------------------------------------------------------------------------
-# MONTHLY RETURNS HEAT MAP
-# Create a DataFrame for monthly returns
-monthly_returns_df = pd.DataFrame({'Date': monthly_returns.index, 'Monthly_Return': monthly_returns.values})
-
-# Extract year and month from the Date column
-monthly_returns_df['Year']  = monthly_returns_df['Date'].dt.year
-monthly_returns_df['Month'] = monthly_returns_df['Date'].dt.month
-
-# Calculate monthly avg returns
-monthly_percentage_changes = monthly_returns_df.groupby('Month')['Monthly_Return'].mean()*100
-
-# Pivot the DataFrame to create a heatmap
-heatmap_data = monthly_returns_df.pivot_table(index='Year', columns='Month', values='Monthly_Return')
-heatmap_data = heatmap_data.reindex(columns=range(1, 13))   # always 12 columns, even for a partial first year
-monthly_percentage_changes = monthly_percentage_changes.reindex(range(1, 13))
-
-
-
-# Customize the color scale and axis labels for the heatmap
-heatmap_data.columns = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-heatmap_data.index.name = "Year"
-
-
-# Create the heatmap using Plotly Express
-heatmap_fig = px.imshow(np.round(heatmap_data*100,2),
-                                labels=dict(x        = "Month", 
-                                            y        = "Year", 
-                                            color    = "Monthly Return"
-                                            ),
-                                title                       = f"Heatmap of Monthly Returns for {ticker}",
-                                color_continuous_scale      = ["red", "white", "green"],
-                                color_continuous_midpoint   = 0,
-                                text_auto                   = True,
-                                height                      = 1000
-                                )
-
-# Customize the color scale and axis labels for the heatmap
-heatmap_fig.update_xaxes(tickvals=list(range(12)), 
-                         ticktext = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"])
+# MONTHLY RETURNS HEAT MAP (values in %)
+heatmap_fig = px.imshow(heatmap_data.round(2),
+                        labels=dict(x="Month", y="Year", color="Monthly return (%)"),
+                        title=f"Heatmap of monthly returns (%) for {ticker}",
+                        color_continuous_scale=["red", "white", "green"],
+                        color_continuous_midpoint=0, text_auto=True, height=1000)
 heatmap_fig.update_yaxes(title_text="Year")
 
-
 #-------------------------------------------------------------------------------------------------------
-#AVG MONTHLY RETURNS HISTOGRAM (for defined period)
+# AVERAGE / MEDIAN MONTHLY RETURNS (values in %, already scaled once)
 percentage_changes_fig = go.Figure()
-
-# Add Values to Monthly HeatMap
-percentage_changes_fig.add_trace(go.Bar(
-                                        x            = heatmap_data.columns, 
-                                        y            = np.round(monthly_percentage_changes*100,2), 
-                                        orientation  = 'v', 
-                                        marker       = go.bar.Marker(
-                                                                    color       = monthly_percentage_changes,
-                                                                    colorscale  = "rdbu",
-                                                                    cmid        = 0,
-                                                                    colorbar    = dict(title="value"),
-                                                                    line        = dict(color="rgb(0, 0, 0)", width = 1)
-                                                                    )
-                                        )
-                                )
-
-# Update layout
-percentage_changes_fig.update_layout(title_text ='Average monthly performance', height=500)
-
-percentage_changes_fig.update_xaxes(title_text = "Avg monthly returns")
-
+percentage_changes_fig.add_trace(go.Bar(x=stats.index, y=stats["mean_pct"].round(2), name="Mean",
+                                        marker=dict(color=stats["mean_pct"], colorscale="rdbu", cmid=0,
+                                                    line=dict(color="rgb(0, 0, 0)", width=1)),
+                                        customdata=np.stack([stats["n"], stats["hit_rate_pct"], stats["t_stat"]], axis=-1),
+                                        hovertemplate="%{x}: mean %{y:.2f}%<br>n=%{customdata[0]}, "
+                                                      "positive %{customdata[1]:.0f}%, t=%{customdata[2]:.2f}<extra></extra>"))
+percentage_changes_fig.add_trace(go.Bar(x=stats.index, y=stats["median_pct"].round(2), name="Median",
+                                        marker=dict(color="rgba(120,120,120,0.6)", line=dict(color="rgb(0,0,0)", width=1))))
+percentage_changes_fig.update_layout(title_text='Mean and median monthly return (%)', height=500, barmode="group")
+percentage_changes_fig.update_yaxes(title_text="Monthly return (%)")
 percentage_changes_fig.add_hline(y=0)
-
-percentage_changes_fig.add_annotation(
-                                        text           = ("@VanHelsing")
-                                        , showarrow    = False
-                                        , x            = 1
-                                        , y            = 0.1
-                                        , xref         = 'paper'
-                                        , yref         = 'paper' 
-                                        , xanchor      = 'right'
-                                        , yanchor      = 'bottom'
-                                        , font         = dict(size=12, color="grey")
-                                        , align        = "left"
-                                        )
+percentage_changes_fig.add_annotation(text="@VanHelsing", showarrow=False, x=1, y=0.1, xref='paper', yref='paper',
+                                      xanchor='right', yanchor='bottom', font=dict(size=12, color="grey"))
 
 # Streamlit integration
 st.plotly_chart(ret, width='stretch')
 st.plotly_chart(heatmap_fig, width='stretch')
 st.plotly_chart(percentage_changes_fig, width='content')
+st.markdown("**Per-month statistics** (|t| < 2 means the mean is not distinguishable from zero; "
+            "with ~10–30 years per month most seasonal 'edges' are noise)")
+st.dataframe(stats.drop(columns="std_pct").round(2), width='content')
 
 st.write(
     "About\n",
-    "\nSeasonality Performance is not a financial advisor\n",
-    "\nCopyright 2023 Snowflake Inc. All rights reserved.\n"
+    "\nSeasonality Performance is not financial advice.\n",
 )

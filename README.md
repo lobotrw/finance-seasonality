@@ -157,3 +157,11 @@ st.write(
 
 link to the app:
 https://finance-seasonality.streamlit.app/
+
+## Method notes (logic fixes)
+
+- Monthly return = month-end adjusted close / previous month-end close − 1, using **complete months only**. The current, unfinished month and a partial first month (for example BTC Sep 2014) are excluded.
+- Every value is in percent and scaled **once**. Before this fix the "Average monthly performance" bars were 100× too large.
+- The app shows the **mean and median** per month, with the hit rate (% of positive years), n and a t-stat. With 12–27 years per month, most seasonal "edges" are not statistically distinguishable from zero.
+- The top chart is "Growth of $1" from the first close of the selected start year.
+- The calculations live in `seasonality.py` and have offline tests in `tests/test_logic.py`.
